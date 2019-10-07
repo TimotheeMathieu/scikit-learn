@@ -131,7 +131,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         return coef_grads, intercept_grads
 
     def _loss_grad_lbfgs(self, packed_coef_inter, X, y, activations, deltas,
-                         coef_grads, intercept_grads):
+                         coef_grads, intercept_grads, sample_weight):
         """Compute the MLP loss function and its corresponding derivatives
         with respect to the different parameters given in the initialization.
 
@@ -174,12 +174,13 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         """
         self._unpack(packed_coef_inter)
         loss, coef_grads, intercept_grads = self._backprop(
-            X, y, activations, deltas, coef_grads, intercept_grads)
+            X, y, activations, deltas, coef_grads, intercept_grads,
+            sample_weight)
         grad = _pack(coef_grads, intercept_grads)
         return loss, grad
 
     def _backprop(self, X, y, activations, deltas, coef_grads,
-                  intercept_grads):
+                  intercept_grads, sample_weight=None):
         """Compute the MLP loss function and its corresponding derivatives
         with respect to each parameter: weights and bias vectors.
 
@@ -224,7 +225,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         loss_func_name = self.loss
         if loss_func_name == 'log_loss' and self.out_activation_ == 'logistic':
             loss_func_name = 'binary_log_loss'
-        loss = LOSS_FUNCTIONS[loss_func_name](y, activations[-1])
+        loss = LOSS_FUNCTIONS[loss_func_name](y, activations[-1],sample_weight)
         # Add L2 regularization term to loss
         values = np.sum(
             np.array([np.dot(s.ravel(), s.ravel()) for s in self.coefs_]))
@@ -309,7 +310,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                                                     fan_out)
         return coef_init, intercept_init
 
-    def _fit(self, X, y, incremental=False):
+    def _fit(self, X, y, incremental=False, sample_weight=None):
         # Make sure self.hidden_layer_sizes is a list
         hidden_layer_sizes = self.hidden_layer_sizes
         if not hasattr(hidden_layer_sizes, "__iter__"):
@@ -367,12 +368,13 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         # Run the Stochastic optimization solver
         if self.solver in _STOCHASTIC_SOLVERS:
             self._fit_stochastic(X, y, activations, deltas, coef_grads,
-                                 intercept_grads, layer_units, incremental)
+                                 intercept_grads, layer_units, incremental,
+                                 sample_weight)
 
         # Run the LBFGS solver
         elif self.solver == 'lbfgs':
             self._fit_lbfgs(X, y, activations, deltas, coef_grads,
-                            intercept_grads, layer_units)
+                            intercept_grads, layer_units, sample_weight)
         return self
 
     def _validate_hyperparameters(self):
@@ -428,7 +430,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                              (self.solver, ", ".join(supported_solvers)))
 
     def _fit_lbfgs(self, X, y, activations, deltas, coef_grads,
-                   intercept_grads, layer_units):
+                   intercept_grads, layer_units, sample_weight):
         # Store meta information for the parameters
         self._coef_indptr = []
         self._intercept_indptr = []
@@ -466,13 +468,15 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                     "iprint": iprint,
                     "gtol": self.tol
                 },
-                args=(X, y, activations, deltas, coef_grads, intercept_grads))
+                args=(X, y, activations, deltas, coef_grads, intercept_grads,
+                      sample_weight))
         self.n_iter_ = _check_optimize_result("lbfgs", opt_res, self.max_iter)
         self.loss_ = opt_res.fun
         self._unpack(opt_res.x)
 
     def _fit_stochastic(self, X, y, activations, deltas, coef_grads,
-                        intercept_grads, layer_units, incremental):
+                        intercept_grads, layer_units, incremental,
+                        sample_weight):
 
         if not incremental or not hasattr(self, '_optimizer'):
             params = self.coefs_ + self.intercepts_
@@ -608,7 +612,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
             if self.loss_curve_[-1] < self.best_loss_:
                 self.best_loss_ = self.loss_curve_[-1]
 
-    def fit(self, X, y):
+    def fit(self, X, y, sample_weight=None):
         """Fit the model to data matrix X and target(s) y.
 
         Parameters
@@ -624,7 +628,7 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
         -------
         self : returns a trained MLP model.
         """
-        return self._fit(X, y, incremental=False)
+        return self._fit(X, y, incremental=False, sample_weight=None)
 
     @property
     def partial_fit(self):
@@ -648,8 +652,8 @@ class BaseMultilayerPerceptron(BaseEstimator, metaclass=ABCMeta):
                                  % self.solver)
         return self._partial_fit
 
-    def _partial_fit(self, X, y):
-        return self._fit(X, y, incremental=True)
+    def _partial_fit(self, X, y, sample_weight=None):
+        return self._fit(X, y, incremental=True, sample_weight=None)
 
     def _predict(self, X):
         """Predict using the trained model
@@ -1024,7 +1028,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
                                  % self.solver)
         return self._partial_fit
 
-    def _partial_fit(self, X, y, classes=None):
+    def _partial_fit(self, X, y, classes=None, sample_weight=None):
         if _check_partial_fit_first_call(self, classes):
             self._label_binarizer = LabelBinarizer()
             if type_of_target(y).startswith('multilabel'):
@@ -1032,7 +1036,7 @@ class MLPClassifier(ClassifierMixin, BaseMultilayerPerceptron):
             else:
                 self._label_binarizer.fit(classes)
 
-        super()._partial_fit(X, y)
+        super()._partial_fit(X, y, sample_weight=sample_weight)
 
         return self
 
